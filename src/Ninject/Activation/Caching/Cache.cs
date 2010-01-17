@@ -9,7 +9,9 @@
 #endregion
 #region Using Directives
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Web;
 using Ninject.Components;
 using Ninject.Infrastructure;
 using Ninject.Infrastructure.Disposal;
@@ -36,7 +38,10 @@ namespace Ninject.Activation.Caching
 		/// </summary>
 		public int Count
 		{
-			get { return _entries.Sum(list => list.Value.Count); }
+			get
+			{
+			    return _entries.Sum(list => list.Value.Count);
+			}
 		}
 
 		/// <summary>
@@ -75,6 +80,23 @@ namespace Ninject.Activation.Caching
 			Ensure.ArgumentNotNull(context, "context");
 
 			var entry = new CacheEntry(context, reference);
+
+#if !NO_WEB
+		    var httpScope = context.GetScope() as HttpContext;
+            if(httpScope != null)
+            {
+                var entries = GetEntriesCache(httpScope);
+                entries[context.Binding].Add(entry);
+
+                var disposable = reference.Instance as IDisposable;
+                if(disposable != null)
+                {
+                    var disposables = GetRequestScopedDisposables(httpScope);
+                    disposables.Add(disposable);
+                }
+                return;
+            }
+#endif
 		
 			lock (_entries)
 			{
@@ -87,7 +109,29 @@ namespace Ninject.Activation.Caching
 				notifyScope.Disposed += (o, e) => Forget(entry);
 		}
 
-		/// <summary>
+        private static Multimap<IBinding, CacheEntry> GetEntriesCache(HttpContext httpContext)
+        {
+            var entries = httpContext.Items["__ninject_cache_entries"] as Multimap<IBinding, CacheEntry>;
+            if(entries == null)
+            {
+                entries = new Multimap<IBinding, CacheEntry>();
+                httpContext.Items["__ninject_cache_entries"] = entries;
+            }
+            return entries;
+        }
+
+        private static ICollection<IDisposable> GetRequestScopedDisposables(HttpContext httpContext)
+        {
+            var entries = httpContext.Items["__ninject_cache_disposable_entries"] as ICollection<IDisposable>;
+            if(entries == null)
+            {
+                entries = new List<IDisposable>();
+                httpContext.Items["__ninject_cache_disposable_entries"] = entries;
+            }
+            return entries;
+        }
+
+	    /// <summary>
 		/// Tries to retrieve an instance to re-use in the specified context.
 		/// </summary>
 		/// <param name="context">The context that is being activated.</param>
@@ -96,32 +140,45 @@ namespace Ninject.Activation.Caching
 		{
 			Ensure.ArgumentNotNull(context, "context");
 
-			lock (_entries)
+            var scope = context.GetScope();
+
+#if !NO_WEB
+            var httpScope = scope as HttpContext;
+            if(httpScope != null)
+            {
+                var entries = GetEntriesCache(httpScope);
+                return GetItemFromCache(context, httpScope, entries);
+            }
+#endif
+		    lock (_entries)
 			{
-				var scope = context.GetScope();
-
-				foreach (CacheEntry entry in _entries[context.Binding])
-				{
-					if (!ReferenceEquals(entry.Scope.Target, scope))
-						continue;
-
-					if (context.HasInferredGenericArguments)
-					{
-						var cachedArguments = entry.Context.GenericArguments;
-						var arguments = context.GenericArguments;
-
-						if (!cachedArguments.SequenceEqual(arguments))
-							continue;
-					}
-
-					return entry.Reference.Instance;
-				}
-
-				return null;
+				return GetItemFromCache(context, scope, _entries);
 			}
 		}
+	    private static object GetItemFromCache(IContext context, object scope, Multimap<IBinding, CacheEntry> entries)
+	    {
+	        foreach (CacheEntry entry in entries[context.Binding])
+	        {
+	            if (!ReferenceEquals(entry.Scope.Target, scope))
+	                continue;
 
-		/// <summary>
+	            if (context.HasInferredGenericArguments)
+	            {
+	                var cachedArguments = entry.Context.GenericArguments;
+	                var arguments = context.GenericArguments;
+
+	                if (!cachedArguments.SequenceEqual(arguments))
+	                    continue;
+	            }
+
+	            return entry.Reference.Instance;
+	        }
+
+	        return null;
+	    }
+
+
+	    /// <summary>
 		/// Removes instances from the cache which should no longer be re-used.
 		/// </summary>
 		public void Prune()
@@ -162,5 +219,20 @@ namespace Ninject.Activation.Caching
 				Scope = new WeakReference(context.GetScope());
 			}
 		}
+
+#if !NO_WEB
+        /// <summary>
+        /// Disposes request scoped IDisposable instances
+        /// </summary>
+        /// <param name="httpContext"></param>
+        public void DisposeRequestScoped(HttpContext httpContext)
+        {
+            var disposables = GetRequestScopedDisposables(httpContext);
+            foreach(var disposable in disposables)
+            {
+                disposable.Dispose();
+            }
+        }
+#endif
 	}
 }

@@ -27,7 +27,7 @@ namespace Ninject.Tests.Integration.RequestScopeTests
 		public HttpContext GetFakeHttpContext()
 		{
 			var request = new HttpRequest("index.html", "http://example.org/index.html", String.Empty);
-			var response = new HttpResponse(new StringWriter());
+            var response = new HttpResponse(new StringWriter());
 			return new HttpContext(request, response);
 		}
 	}
@@ -58,10 +58,10 @@ namespace Ninject.Tests.Integration.RequestScopeTests
 		}
 
 		[Fact]
-		public void InstancesAreDisposedWhenRequestEndsAndCacheIsPruned()
+        public void InstancesAreDisposedWhenDisposeRequestScopedIsCalled()
 		{
 			kernel.Bind<INotifyWhenDisposed>().To<NotifiesWhenDisposed>().InRequestScope();
-			var cache = kernel.Components.Get<ICache>();
+			var cache = kernel.Components.Get<ICache>() as Cache;
 
 			BeginNewFakeWebRequest();
 
@@ -70,12 +70,7 @@ namespace Ninject.Tests.Integration.RequestScopeTests
 			instance.ShouldNotBeNull();
 			instance.ShouldBeInstanceOf<NotifiesWhenDisposed>();
 
-			BeginNewFakeWebRequest();
-
-			GC.Collect();
-			GC.WaitForPendingFinalizers();
-
-			cache.Prune();
+			cache.DisposeRequestScoped(HttpContext.Current);
 
 			instance.IsDisposed.ShouldBeTrue();
 		}
